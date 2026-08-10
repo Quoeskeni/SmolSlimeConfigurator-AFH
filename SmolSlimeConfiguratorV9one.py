@@ -151,7 +151,8 @@ def fetch_latest_firmware_assets():
 # Start base window, size & name
 app = ctk.CTk()
 app.title("SmolSlime Configurator")
-app.geometry("1010x500")
+app.geometry("1080x560")
+app.minsize(1010, 520)
 
 # Overdone tooltip overlay
 class ToolTip:
@@ -781,18 +782,18 @@ ToolTip(btn_download_fw, "Upgrade your firmware!")
 status_label = ctk.CTkLabel(top_frame, text="Not connected", text_color="red")
 status_label.pack(side="left", padx=10)
 
-tab_view = ctk.CTkTabview(app, width=580, height=130, corner_radius=10, anchor="w")
+tab_view = ctk.CTkTabview(app, width=1000, height=170, corner_radius=10, anchor="w")
 tab_view.pack(pady=10, padx=10, fill="x")
 
 
 
 # Make the repetitive stuff less messy
-def ui_btn(parent, text, command, tooltip):
+def ui_btn(parent, text, command, tooltip, width=110):
     btn = ctk.CTkButton(
         parent,
         text=text,
         command=command,
-        width=110,
+        width=width,
         height=30,
         anchor="center"
     )
@@ -821,7 +822,7 @@ ui_btn(tracker_btn_frame, "Debug", lambda: send_command("debug"), "Print debug l
 ui_btn(tracker_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(row=1, column=5, padx=5, pady=5)
 
 ui_btn(tracker_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz").grid(row=2, column=1, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
 
 # Receiver tab
 receiver_tab = tab_view.add("Receiver")
@@ -841,7 +842,7 @@ ui_btn(receiver_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(
 ui_btn(receiver_btn_frame, "⎋ Pairing Mode", lambda: send_command("exit"), "Exit pairing mode").grid(row=1, column=4, padx=5, pady=5)
 
 ui_btn(receiver_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz").grid(row=2, column=1, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
 
 # Settings tab
 settings_tab = tab_view.add("Settings")
@@ -1010,24 +1011,32 @@ ToolTip(btn_clear, "Clear")
 
 command_entry.bind("<Return>", lambda event: send_custom_command())
 
-# MY GUY THE ICON IS THE MOST IMPORTANT TING
+# App icons are nice, but missing/bad icon files must never prevent the
+# Windows PyInstaller build from opening. Fall back to the default Tk icon.
 def resource_path(relative_path):
-    """gapfpione."""
-    try:
-        base_path = sys._MEIPASS
-    except Exception:
-        base_path = os.path.abspath(".")
-    return os.path.join(base_path, relative_path)
+    if getattr(sys, "frozen", False):
+        return os.path.join(sys._MEIPASS, relative_path)
+    return os.path.join(os.path.abspath("."), relative_path)
 
-if sys.platform.startswith("win"):
-    app.iconbitmap(resource_path("icon.ico"))
-elif sys.platform.startswith("linux") or sys.platform.startswith("darwin"):
-    img_path = resource_path("icon.png")
-    try:
-        img = tk.PhotoImage(file=img_path)
-        app.iconphoto(True, img)
-    except Exception as e:
-        print(f"boohoo.. error: {e}")
+def set_app_icon():
+    icon_ico = resource_path("icon.ico")
+    icon_png = resource_path("icon.png")
+
+    if sys.platform.startswith("win") and os.path.exists(icon_ico):
+        try:
+            app.iconbitmap(icon_ico)
+            return
+        except tk.TclError as e:
+            print(f"[Warning] Could not load icon.ico: {e}")
+
+    if os.path.exists(icon_png):
+        try:
+            img = tk.PhotoImage(file=icon_png)
+            app.iconphoto(True, img)
+        except tk.TclError as e:
+            print(f"[Warning] Could not load icon.png: {e}")
+
+set_app_icon()
 
 
 
