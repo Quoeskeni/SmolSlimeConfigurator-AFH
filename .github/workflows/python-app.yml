@@ -5,12 +5,21 @@ on:
     branches: ["main"]
   pull_request:
     branches: ["main"]
+  workflow_dispatch:
 
 jobs:
   build:
+    name: Build ${{ matrix.os }} test artifact
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        include:
+          - os: ubuntu-latest
+            artifact_name: SmolSlimeConfigurator-linux
+          - os: windows-latest
+            artifact_name: SmolSlimeConfigurator.exe
+          - os: macos-latest
+            artifact_name: SmolSlimeConfigurator-macos
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -24,40 +33,27 @@ jobs:
 
       - name: Install dependencies
         run: |
-          python -m venv venv
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            venv/Scripts/python -m pip install --upgrade pip
-            venv/Scripts/python -m pip install pyinstaller customtkinter pyserial requests nrfuitl
-          else
-            source venv/bin/activate
-            python -m pip install --upgrade pip
-            pip install pyinstaller customtkinter pyserial requests nrfutil
-          fi
-        shell: bash
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller customtkinter pyserial requests
+
+      - name: Syntax check
+        run: |
+          python -m py_compile SmolSlimeConfiguratorV9.py SmolSlimeConfiguratorV9one.py
 
       - name: Build executable
-        run: |
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            venv/Scripts/python -m PyInstaller --onefile --windowed --icon=icon.ico \
-              --add-data "icon.ico;." \
-              --add-binary "bin/nrfutil.exe;." \
-              "./SmolSlimeConfiguratorV8-3-7.py"
-          elif [[ "${RUNNER_OS}" == "macOS" ]]; then
-            source venv/bin/activate
-            pyinstaller --onedir --windowed --icon=icon.icns \
-              --add-binary "bin/nrfutil:." \
-              "./SmolSlimeConfiguratorV8-3-7.py"
-          else
-            source venv/bin/activate
-            pyinstaller --onefile --windowed --icon=icon.png \
-              --add-data "icon.png:." \
-              --add-binary "bin/nrfutil:." \
-              "./SmolSlimeConfiguratorV8-3-7.py"
-          fi
         shell: bash
+        run: |
+          pyinstaller --onefile --windowed --name SmolSlimeConfigurator SmolSlimeConfiguratorV9.py
+          mkdir -p upload
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            cp dist/SmolSlimeConfigurator.exe "upload/${{ matrix.artifact_name }}"
+          else
+            cp dist/SmolSlimeConfigurator "upload/${{ matrix.artifact_name }}"
+            chmod +x "upload/${{ matrix.artifact_name }}"
+          fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: SmolSlime-${{ matrix.os }}
-          path: dist/*
+          name: ${{ matrix.artifact_name }}
+          path: upload/${{ matrix.artifact_name }}
