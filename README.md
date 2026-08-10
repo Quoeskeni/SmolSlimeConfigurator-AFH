@@ -39,6 +39,16 @@ and doubble tap gnd (usbc connector on the Nice!Nano)![image](https://github.com
 + Plug in your Reciever, press "↻" refresh and select the port And then press "Connect"
 + To Configure your reciever, select the reciever tab, press pairing mode and power on each reciever one by one, you should notice ![image](https://github.com/user-attachments/assets/ab48dff0-e0f6-4113-a7f7-222260115964) the trackers being added, once all the trackers have been paired, press "Exit Pairing Mode"
 
+
+## **AFH tools**
+
+AFH firmware builds expose two extra serial commands that are available from both the **Tracker** and **Receiver** tabs:
+
++ **AFH Info** sends `afh_info` and prints the current AFH channel, state, error counter, and epoch in the log.
++ **Force Channel 100** sends `afh_set_channel 100` to force the radio back to channel 100 / 2500 MHz, which is the expected AFH discovery/pairing channel for compatible firmware builds.
+
+If pairing does not start, connect the receiver and each tracker over USB, press **Force Channel 100**, then check **AFH Info** before entering pairing mode.
+
 ## **Calibration**
 
 + Plug in a tracker, Press "↻" refresh, select the COM port & "Connect", press "Calibrate 6 Sides", do what the terminal says.

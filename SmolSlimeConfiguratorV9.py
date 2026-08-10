@@ -820,6 +820,9 @@ ui_btn(tracker_btn_frame, "Uptime", lambda: send_command("uptime"), "Get device 
 ui_btn(tracker_btn_frame, "Debug", lambda: send_command("debug"), "Print debug log").grid(row=1, column=4, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(row=1, column=5, padx=5, pady=5)
 
+ui_btn(tracker_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz").grid(row=2, column=1, padx=5, pady=5)
+
 # Receiver tab
 receiver_tab = tab_view.add("Receiver")
 receiver_btn_frame = ctk.CTkFrame(receiver_tab)
@@ -836,6 +839,9 @@ ui_btn(receiver_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootlo
 ui_btn(receiver_btn_frame, "Uptime", lambda: send_command("uptime"), "Get device uptime").grid(row=1, column=2, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(row=1, column=3, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "⎋ Pairing Mode", lambda: send_command("exit"), "Exit pairing mode").grid(row=1, column=4, padx=5, pady=5)
+
+ui_btn(receiver_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz").grid(row=2, column=1, padx=5, pady=5)
 
 # Settings tab
 settings_tab = tab_view.add("Settings")
