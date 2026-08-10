@@ -15,15 +15,35 @@ Pure Simple UI Configurator for SlimeVR Smol Slimes (Unofficial)
 - **Cross-platform** — available for **Windows**, **Linux**, **macOS**, and **Android**.
 - **Theme customization** — switch between **light/dark mode** and choose your favorite accent colour.
 
-# Download
-There are 2 options to run the Configurator:
-- Single-file executables are available from [Releases](https://github.com/ICantMakeThings/SmolSlimeConfigurator/releases) (Windows, Linux, macOS, Android).
-- Python file from the uploaded files above.
-- To build it from source, run:
+# Download / install
+
+## Option 1: download a ready-made executable
+
+Use the project [Releases](https://github.com/ICantMakeThings/SmolSlimeConfigurator/releases) page when you want the same install flow as the original app:
+
+- Windows: download `SmolSlimeConfigurator.exe`.
+- Linux: download `SmolSlimeConfigurator-linux`, then run `chmod +x SmolSlimeConfigurator-linux`.
+- macOS: download `SmolSlimeConfigurator-macos`, then allow it in Privacy & Security if Gatekeeper blocks a manually downloaded unsigned app.
+
+This repository also has a GitHub Actions workflow named **Build configurator binaries**. Maintainers can run it manually or publish a `v*` release/tag to build release artifacts automatically.
+
+## Option 2: run from Python source
+
 ```bash
-pyinstaller --onefile --windowed --icon=icon.png --add-data "icon.png:." --add-binary "/Location/To/UR/NameOfVenv/bin/nrfutil:." SmolSlimeConfiguratorV8.py
+python -m pip install customtkinter pyserial requests
+python SmolSlimeConfiguratorV9.py
 ```
-*Note you NEED to use a venv, NEED to use python 3.10.xx & change the .png to .icns on mac and .ico on windows*
+
+## Option 3: build your own executable
+
+Use Python 3.10 and run:
+
+```bash
+python -m pip install customtkinter pyserial requests pyinstaller
+pyinstaller --onefile --windowed --name SmolSlimeConfigurator SmolSlimeConfiguratorV9.py
+```
+
+The built file will appear in `dist/`. On Windows it will be `dist/SmolSlimeConfigurator.exe`.
 
 # Instructions
 **Note:** There is a [video tutorial](https://youtu.be/2PHelwy7Rcs) explaining general usage, and [this video](https://www.youtube.com/watch?v=ENINHh4L8tk) covers **Android usage** in detail.
@@ -48,6 +68,16 @@ AFH firmware builds expose two extra serial commands that are available from bot
 + **Force Channel 100** sends `afh_set_channel 100` to force the radio back to channel 100 / 2500 MHz, which is the expected AFH discovery/pairing channel for compatible firmware builds.
 
 If pairing does not start, connect the receiver and each tracker over USB, press **Force Channel 100**, then check **AFH Info** before entering pairing mode.
+
+Firmware note: `afh_info` and `afh_set_channel <ch>` must exist in the tracker/receiver firmware console. If `help` does not list those commands, update the AFH firmware first; the GUI can only send commands that the firmware knows how to execute.
+
+### AFH pairing recovery checklist
+
+1. Flash the receiver and every tracker from matching AFH firmware builds.
+2. Connect the receiver over USB, press **Force Channel 100**, then press **AFH Info**.
+3. Enter **Pairing Mode** on the receiver.
+4. Power on one tracker at a time. If a tracker still has old pairing data, connect it over USB and press **Clear Con. Data** before pairing again.
+5. When all trackers are listed on the receiver, press **Exit Pairing Mode**.
 
 ## **Calibration**
 
