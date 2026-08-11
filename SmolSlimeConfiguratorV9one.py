@@ -17,9 +17,26 @@ import re
 from tkinter import filedialog
 import tkinter as tk
 import queue
+import zipfile
+from tkinter import messagebox
 # For safety...
+ui_queue = queue.Queue()
 serial_queue = queue.Queue()
 ser_lock = threading.Lock()
+main_thread = threading.current_thread()
+
+AFH_DEBUG_FIELDS = [
+    "Tracker ID",
+    "Receiver address",
+    "Device address",
+    "AFH channel",
+    "AFH epoch",
+    "AFH consecutive TX errors",
+    "pairing state",
+]
+afh_debug_state = {field: "Unknown" for field in AFH_DEBUG_FIELDS}
+pairing_request_spam_count = 0
+pairing_hint_shown = False
 
 # Set theme
 ctk.set_appearance_mode("dark")
@@ -105,9 +122,48 @@ if sys.platform.startswith("linux"):
     set_linux_scaling()
 
 FIRMWARE_REPOS = {
-    "main": "https://api.github.com/repos/Shine-Bright-Meow/SlimeNRF-Firmware-CI/releases/latest",
+    "main": "https://api.github.com/repos/Quoeskeni/SlimeNRF-Firmware-CI/releases/latest",
     "kounocom": "https://api.github.com/repos/kounocom/SlimeNRF-Firmware-CI/releases/latest"
 }
+
+ARTIFACT_NAME_RE = re.compile(r"(stackedsmol|stacked[-_ ]?smol|receiver|dongle)", re.IGNORECASE)
+
+def github_headers():
+    headers = {"Accept": "application/vnd.github+json"}
+    token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+def repo_api_root(api_url):
+    match = re.search(r"https://api\.github\.com/repos/([^/]+/[^/]+)", api_url)
+    if not match:
+        return None
+    return f"https://api.github.com/repos/{match.group(1)}"
+
+def fetch_artifact_firmware_assets(api_url):
+    api_root = repo_api_root(api_url)
+    if not api_root:
+        return {}
+
+    artifacts_url = f"{api_root}/actions/artifacts?per_page=100"
+    append_text("No GitHub release assets found; checking workflow artifacts...\n")
+    response = requests.get(artifacts_url, headers=github_headers(), timeout=10)
+    response.raise_for_status()
+    artifacts = response.json().get("artifacts", [])
+    fw_dict = {}
+
+    for artifact in artifacts:
+        name = artifact.get("name", "")
+        if artifact.get("expired") or not ARTIFACT_NAME_RE.search(name):
+            continue
+        archive_url = artifact.get("archive_download_url")
+        if archive_url:
+            fw_dict[f"{name} (artifact zip)"] = f"artifact::{archive_url}"
+
+    if fw_dict:
+        append_text(f"Found {len(fw_dict)} matching firmware artifact(s).\n", "success")
+    return fw_dict
 
 # Pull data from latest releases + file browser
 def fetch_latest_firmware_assets():
@@ -122,12 +178,17 @@ def fetch_latest_firmware_assets():
         api_url = FIRMWARE_REPOS.get(source, FIRMWARE_REPOS["main"])
 
     try:
-        response = requests.get(api_url, timeout=10)
+        response = requests.get(api_url, headers=github_headers(), timeout=10)
+        if response.status_code == 404:
+            return fetch_artifact_firmware_assets(api_url)
         response.raise_for_status()
         data = response.json()
 
-        if isinstance(data, list) and len(data) > 0:
-            data = data[0]
+        if isinstance(data, list):
+            if len(data) > 0:
+                data = data[0]
+            else:
+                return fetch_artifact_firmware_assets(api_url)
 
         assets = data.get("assets", [])
         fw_dict = {}
@@ -139,7 +200,10 @@ def fetch_latest_firmware_assets():
                 fw_dict[name] = url
 
         if not fw_dict:
-            append_text("No UF2 or HEX found in latest release. check internet and if still issue, post a issue on github, https://icmt.cc\n", "error")
+            fw_dict = fetch_artifact_firmware_assets(api_url)
+
+        if not fw_dict:
+            append_text("No UF2/HEX release assets or matching firmware artifacts found.\n", "error")
 
         return fw_dict
 
@@ -224,6 +288,60 @@ def refresh_ports():
         port_option.configure(values=["No ports found"])
         port_option.set("No ports found")
 
+def run_on_ui_thread(func, *args, **kwargs):
+    if threading.current_thread() is main_thread:
+        func(*args, **kwargs)
+    else:
+        ui_queue.put((func, args, kwargs))
+
+def call_on_ui_thread_sync(func, *args, **kwargs):
+    if threading.current_thread() is main_thread:
+        return func(*args, **kwargs)
+
+    result_queue = queue.Queue(maxsize=1)
+
+    def wrapper():
+        try:
+            result_queue.put((True, func(*args, **kwargs)))
+        except Exception as exc:
+            result_queue.put((False, exc))
+
+    ui_queue.put((wrapper, (), {}))
+    ok, result = result_queue.get()
+    if ok:
+        return result
+    raise result
+
+def set_status(text, color):
+    run_on_ui_thread(status_label.configure, text=text, text_color=color)
+
+def show_progress():
+    run_on_ui_thread(progress_bar.pack, pady=(5, 5))
+
+def hide_progress():
+    run_on_ui_thread(progress_bar.pack_forget)
+
+def set_progress(value):
+    run_on_ui_thread(progress_bar.set, value)
+
+def schedule_after(delay_ms, func, *args):
+    run_on_ui_thread(app.after, delay_ms, lambda: func(*args))
+
+def send_commands(commands):
+    for command in commands:
+        send_command(command)
+        time.sleep(0.05)
+
+def pair_afh():
+    send_commands(["afh_set_channel 100", "afh_info", "pair"])
+
+def clear_pair_afh():
+    if messagebox.askyesno("Clear and Pair AFH", "This will clear saved pairing data on the connected device before AFH pairing. Continue?"):
+        send_commands(["clear", "afh_set_channel 100", "afh_info", "pair"])
+
+def run_afh_debug():
+    send_commands(["info", "afh_info", "list", "battery"])
+
 # El button to connect your Smol Slimes to El program
 def connect_to_port():
     global ser, connected, read_thread, stop_read
@@ -247,7 +365,7 @@ def connect_to_port():
     try:
         ser = serial.Serial(port, 115200, timeout=1)
         connected = True
-        status_label.configure(text=f"Connected to {port}", text_color="green")
+        set_status(f"Connected to {port}", "green")
         append_text(f"Connected to {port}\n", "success")
 
         read_thread = threading.Thread(target=read_serial, daemon=True)
@@ -255,7 +373,7 @@ def connect_to_port():
 
     except serial.SerialException as e:
         append_text(f"Failed to connect: {e}\n")
-        status_label.configure(text="Connection failed", text_color="red")
+        set_status("Connection failed", "red")
 
 # If smolslime escapes (disconnects) de program tries to catch it and put it back in the dungeon (reconnects)
 def attempt_reconnect():
@@ -283,19 +401,18 @@ def attempt_reconnect():
                 stop_read.clear()
                 read_thread = threading.Thread(target=read_serial, daemon=True)
                 read_thread.start()
-                status_label.configure(text=f"Connected to {port}", text_color="green")
+                set_status(f"Connected to {port}", "green")
                 append_text("\nSuccessfully reconnected!\n", "success")
                 break
 
             except serial.SerialException:
                 retries += 1
                 append_text(".", None)
-                console.update_idletasks()
                 time.sleep(2)
 
         if not connected:
             append_text("\nFailed to reconnect.\n", "error")
-            status_label.configure(text="Not connected", text_color="red")
+            set_status("Not connected", "red")
 
     threading.Thread(target=reconnect_loop, daemon=True).start()
 
@@ -341,10 +458,14 @@ def disconnect_serial():
         pass
     ser = None
     connected = False
-    status_label.configure(text="Not connected", text_color="red")
+    set_status("Not connected", "red")
 
 # Let the code add MORE!! (more lines of serial that is)
 def append_text(text, color=None):
+    if threading.current_thread() is not main_thread:
+        ui_queue.put((append_text, (text, color), {}))
+        return
+
     console.configure(state="normal")
     tag = None
     if color == "error":
@@ -362,7 +483,6 @@ def append_text(text, color=None):
     if at_bottom:
         console.see("end")
 
-    console.update_idletasks()
     console.configure(state="disabled")
 
 # The thing that asks for the custom .U2F
@@ -403,7 +523,7 @@ ToolTip(btn_connect, "Connect to the selected serial port")
 
 progress_bar = ctk.CTkProgressBar(app, width=1000)
 progress_bar.set(0)
-progress_bar.pack_forget()
+hide_progress()
 
 firmware_urls = {"Custom (User provided .uf2 / .hex)": None}
 
@@ -585,13 +705,16 @@ app.after(100, populate_firmware_menu)
 
 # Loading bar
 def animate_progress(target, step=0.02, interval=50):
+    if threading.current_thread() is not main_thread:
+        run_on_ui_thread(animate_progress, target, step, interval)
+        return
+
     current = progress_bar.get()
     if current < target:
         progress_bar.set(min(current + step, target))
         app.after(interval, lambda: animate_progress(target, step, interval))
-    else:
-        if target == 1.0:
-            app.after(2000, lambda: progress_bar.pack_forget())
+    elif target == 1.0:
+        app.after(2000, progress_bar.pack_forget)
 
 def get_nrfutil_path():
     if getattr(sys, 'frozen', False):
@@ -626,7 +749,7 @@ def flash_hex_firmware(file_path):
             nrfutil_cmd, "pkg", "generate",
             "--hw-version", "52",
             "--application-version", "1",
-            "--sd-req", "0xFF",
+            "--sd-req", "0x00",
             "--application", file_path,
             dfu_package
         ], check=True, shell=False)
@@ -640,7 +763,7 @@ def flash_hex_firmware(file_path):
         ], check=True, shell=False)
 
         append_text("YAY! FW Flashed!!!\n", "success")
-        progress_bar.set(1.0)
+        set_progress(1.0)
 
     except FileNotFoundError:
         append_text("Error 420: run 'pip install nrfutil'.\n", "error")
@@ -655,6 +778,27 @@ def flash_hex_firmware(file_path):
 
 
 
+def download_artifact_firmware(artifact_url):
+    temp_dir = tempfile.mkdtemp(prefix="smolslime_artifact_")
+    zip_path = os.path.join(temp_dir, "artifact.zip")
+    append_text(f"Downloading firmware artifact from {artifact_url}...\n", "success")
+    response = requests.get(artifact_url, headers=github_headers(), stream=True, timeout=30)
+    response.raise_for_status()
+    with open(zip_path, "wb") as f:
+        shutil.copyfileobj(response.raw, f)
+
+    with zipfile.ZipFile(zip_path) as archive:
+        archive.extractall(temp_dir)
+
+    for root, _, files in os.walk(temp_dir):
+        for filename in files:
+            if filename.lower().endswith((".uf2", ".hex")):
+                firmware_path = os.path.join(root, filename)
+                append_text(f"Using extracted firmware: {firmware_path}\n", "success")
+                return firmware_path
+
+    raise FileNotFoundError("Artifact zip did not contain a .uf2 or .hex firmware file")
+
 # Download the firmware once user selected and pressed the Firmware button,
 # and also the actual logic for flashing (Resets, puts into DFU, waits for drive to appear, moves the .U2F to the drive)
 def download_firmware():
@@ -668,7 +812,7 @@ def download_firmware():
     
 
     if selection == "Custom (User provided .uf2 / .hex)":
-        file_path = filedialog.askopenfilename(filetypes=[("Firmware files", "*.uf2 *.hex"), ("UF2 files", "*.uf2"), ("HEX files", "*.hex")])
+        file_path = call_on_ui_thread_sync(filedialog.askopenfilename, filetypes=[("Firmware files", "*.uf2 *.hex"), ("UF2 files", "*.uf2"), ("HEX files", "*.hex")])
         if not file_path:
             append_text("No custom firmware selected.\n")
             return
@@ -684,16 +828,18 @@ def download_firmware():
             append_text("No firmware URL for selected firmware.\n")
             return
 
-        local_path = os.path.join(tempfile.gettempdir(), os.path.basename(firmware_url))
-
         try:
-            append_text(f"Downloading firmware from {firmware_url}...\n", "success")
-            response = requests.get(firmware_url, stream=True, timeout=20)
-            response.raise_for_status()
-            with open(local_path, 'wb') as f:
-                shutil.copyfileobj(response.raw, f)
+            if firmware_url.startswith("artifact::"):
+                local_path = download_artifact_firmware(firmware_url.removeprefix("artifact::"))
+            else:
+                local_path = os.path.join(tempfile.gettempdir(), os.path.basename(firmware_url))
+                append_text(f"Downloading firmware from {firmware_url}...\n", "success")
+                response = requests.get(firmware_url, stream=True, timeout=20)
+                response.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    shutil.copyfileobj(response.raw, f)
 
-            append_text(f"Firmware downloaded to: {local_path}\n", "success")
+                append_text(f"Firmware downloaded to: {local_path}\n", "success")
             if local_path.endswith(".hex"):
                 append_text("yoo HEX file! Loading...\n", "success")
                 flash_hex_firmware(local_path)
@@ -702,7 +848,7 @@ def download_firmware():
         except Exception as e:
             append_text(f"[Error] Firmware download failed: {e}\n", "error")
             return
-    progress_bar.pack(pady=(5,5))
+    show_progress()
     animate_progress(0.2)
 
     append_text("Clearing Connection data and entering bootloader mode...\n")
@@ -759,17 +905,67 @@ def download_firmware():
             shutil.copy(local_path, dest)
             append_text(f"DONE: Firmware successfully flashed to {mount_point}\n", "success")
             animate_progress(1.0)
-            app.after(2000, lambda: progress_bar.pack_forget())
+            schedule_after(2000, progress_bar.pack_forget)
 
         else:
             append_text("ERROR: Could not find NICENANO or UF2 boot device. Is the device in DFU/bootloader mode?\n", "error")
-        progress_bar.pack_forget()
+        hide_progress()
 
     except Exception as e:
         append_text(f"[Error flashing] {e}\n", "error")
         append_text("NOTE! On windows [WinError 433] doesn't mean it failed!\n", "success")
-        progress_bar.pack_forget()
+        hide_progress()
 
+
+def update_afh_debug_state(line):
+    global pairing_request_spam_count, pairing_hint_shown
+    lower = line.lower()
+    patterns = {
+        "Tracker ID": [r"tracker\s*id[:=]\s*([^,;]+)", r"id[:=]\s*([^,;]+)"],
+        "Receiver address": [r"receiver\s*address[:=]\s*([^,;]+)", r"rx\s*addr(?:ess)?[:=]\s*([^,;]+)"],
+        "Device address": [r"device\s*address[:=]\s*([^,;]+)", r"dev\s*addr(?:ess)?[:=]\s*([^,;]+)"],
+        "AFH channel": [r"afh(?:\s+channel| channel)?[:=]\s*(\d+)", r"channel[:=]\s*(\d+)"],
+        "AFH epoch": [r"epoch[:=]\s*(\d+)"],
+        "AFH consecutive TX errors": [r"consecutive\s+tx\s+errors[:=]\s*(\d+)", r"tx\s+errors[:=]\s*(\d+)"]
+    }
+    for field, regexes in patterns.items():
+        for regex in regexes:
+            match = re.search(regex, line, re.IGNORECASE)
+            if match:
+                afh_debug_state[field] = match.group(1).strip()
+                break
+
+    if "pairing request received" in lower:
+        pairing_request_spam_count += 1
+        afh_debug_state["pairing state"] = "Pairing request received"
+    if "paired" in lower:
+        pairing_request_spam_count = 0
+        afh_debug_state["pairing state"] = "Paired"
+    elif "pair" in lower and "request" not in lower:
+        afh_debug_state["pairing state"] = line.strip()
+
+    if pairing_request_spam_count >= 3 and not pairing_hint_shown:
+        pairing_hint_shown = True
+        append_text("Hint: Tracker requests are reaching a receiver, but no pair ACK was accepted yet. Keep receiver in Start AFH Pairing, and use Pair AFH on one tracker at a time.\n", "error")
+
+def save_debug_log():
+    path = filedialog.asksaveasfilename(
+        title="Save AFH debug log",
+        defaultextension=".txt",
+        filetypes=[("Text files", "*.txt"), ("All files", "*.*")],
+    )
+    if not path:
+        return
+    console_text = console.get("1.0", "end-1c")
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("AFH Debug State\n")
+        f.write("===============\n")
+        for field in AFH_DEBUG_FIELDS:
+            f.write(f"{field}: {afh_debug_state.get(field, 'Unknown')}\n")
+        f.write("\nConsole Log\n")
+        f.write("===========\n")
+        f.write(console_text)
+    append_text(f"Saved AFH debug log to {path}\n", "success")
 
 # Buttons!
 def start_firmware_download():
@@ -814,8 +1010,8 @@ ui_btn(tracker_btn_frame, "Calibrate 6 Sides", lambda: send_command("6-side"), "
 ui_btn(tracker_btn_frame, "Mag Clear", lambda: send_command("mag"), "Clear magnetometer calibration").grid(row=0, column=5, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "Battery", lambda: send_command("battery"), "Get battery information").grid(row=0, column=6, padx=5, pady=5)
 
-ui_btn(tracker_btn_frame, "Pairing Mode", lambda: send_command("pair"), "Enter pairing mode").grid(row=1, column=0, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Clear Con. Data", lambda: send_command("clear"), "Clear pairing data").grid(row=1, column=1, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Pair AFH", pair_afh, "Set channel 100, print AFH info, then pair safely").grid(row=1, column=0, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Clear+Pair AFH", clear_pair_afh, "Clear pairing data, set channel 100, then pair", width=135).grid(row=1, column=1, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=1, column=2, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "Uptime", lambda: send_command("uptime"), "Get device uptime").grid(row=1, column=3, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "Debug", lambda: send_command("debug"), "Print debug log").grid(row=1, column=4, padx=5, pady=5)
@@ -823,6 +1019,8 @@ ui_btn(tracker_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(r
 
 ui_btn(tracker_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
 ui_btn(tracker_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Run AFH Debug", run_afh_debug, "Run info, AFH info, list, and battery", width=135).grid(row=2, column=2, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Save Debug Log", save_debug_log, "Save parsed AFH state and console text", width=135).grid(row=2, column=3, padx=5, pady=5)
 
 # Receiver tab
 receiver_tab = tab_view.add("Receiver")
@@ -833,7 +1031,7 @@ ui_btn(receiver_btn_frame, "Info", lambda: send_command("info"), "Get device inf
 ui_btn(receiver_btn_frame, "List", lambda: send_command("list"), "Get paired devices").grid(row=0, column=1, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "Reboot", lambda: send_command("reboot"), "Soft reset the device").grid(row=0, column=2, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "Remove", lambda: send_command("remove"), "Remove last paired device").grid(row=0, column=3, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Pairing Mode", lambda: send_command("pair"), "Enter pairing mode").grid(row=0, column=4, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Start AFH Pairing", pair_afh, "Set channel 100, print AFH info, then enter receiver pairing", width=145).grid(row=0, column=4, padx=5, pady=5)
 
 ui_btn(receiver_btn_frame, "✖ Saved Devices", lambda: send_command("clear"), "Clear stored devices").grid(row=1, column=0, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=1, column=1, padx=5, pady=5)
@@ -843,6 +1041,8 @@ ui_btn(receiver_btn_frame, "⎋ Pairing Mode", lambda: send_command("exit"), "Ex
 
 ui_btn(receiver_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Run AFH Debug", run_afh_debug, "Run info, AFH info, list, and battery", width=135).grid(row=2, column=2, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Save Debug Log", save_debug_log, "Save parsed AFH state and console text", width=135).grid(row=2, column=3, padx=5, pady=5)
 
 # Settings tab
 settings_tab = tab_view.add("Settings")
@@ -1040,11 +1240,18 @@ set_app_icon()
 
 
 
-def flush_serial_queue():
-    while not serial_queue.empty():
-        append_text(serial_queue.get() + "\n")
-    app.after(50, flush_serial_queue)
+def flush_ui_queue():
+    while not ui_queue.empty():
+        func, args, kwargs = ui_queue.get()
+        func(*args, **kwargs)
 
-app.after(50, flush_serial_queue)
+    while not serial_queue.empty():
+        line = serial_queue.get()
+        update_afh_debug_state(line)
+        append_text(line + "\n")
+
+    app.after(50, flush_ui_queue)
+
+app.after(50, flush_ui_queue)
 # The MOST PORTAN' PART!!!
 app.mainloop()
