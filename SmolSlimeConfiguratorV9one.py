@@ -38,6 +38,7 @@ afh_debug_state = {field: "Unknown" for field in AFH_DEBUG_FIELDS}
 pairing_request_spam_count = 0
 pairing_hint_shown = False
 raw_console_enabled = False
+receiver_pairing_request_seen = False
 last_device_type = "unknown"
 last_mode_summary = "Waiting for device"
 last_human_lines = []
@@ -366,10 +367,21 @@ def set_raw_console_enabled(value):
         append_text("Smart view enabled: noisy firmware logs are summarized above.\n", "success")
 
 
+def strip_log_prefix(line):
+    line = re.sub(r"\x1b\[[0-9;]*m", "", str(line))
+    line = re.sub(r"^\[[^\]]+\]\s*<[^>]+>\s*[^:]+:\s*", "", line)
+    return line.strip()
+
+
 def normalize_value(value):
-    value = value.strip().strip("[]")
-    value = re.sub(r"\x1b\[[0-9;]*m", "", value)
+    value = strip_log_prefix(value).strip().strip("[]")
     return value.strip()
+
+
+def extract_labeled_value(line, label):
+    cleaned = strip_log_prefix(line)
+    match = re.search(rf"{label}\s*[:=]\s*([^\r\n,;]+)", cleaned, re.IGNORECASE)
+    return normalize_value(match.group(1)) if match else None
 
 
 def set_device_field(field, value):
@@ -424,56 +436,73 @@ def parse_battery_line(line):
 
 
 def process_device_line(line):
-    lower = line.lower()
+    global receiver_pairing_request_seen
+    cleaned = strip_log_prefix(line)
+    lower = cleaned.lower()
     important = False
 
-    if "tracker id" in lower or "receiver address" in lower or "battery" in lower:
+    tracker_id = extract_labeled_value(cleaned, r"tracker\s*id")
+    receiver_address = extract_labeled_value(cleaned, r"receiver\s*address")
+    device_address = extract_labeled_value(cleaned, r"device\s*address")
+
+    if tracker_id:
         set_device_type("tracker")
-    if "device address" in lower or "saved devices" in lower or "pairing mode" in lower:
+        set_device_field("Address", tracker_id)
+        add_human_line(f"Tracker detected, id {tracker_id}.")
+        important = True
+
+    if receiver_address:
+        set_device_type("tracker")
+        set_device_field("Paired with", receiver_address)
+        set_device_field("Pairing", "Paired")
+        set_device_field("Mode", "Paired")
+        add_human_line(f"Tracker paired with receiver {receiver_address}.")
+        important = True
+
+    if "rx pairing request" in lower or "pairing request received" in lower:
         set_device_type("receiver")
-
-    if re.search(r"tracker\s*id[:=]", line, re.IGNORECASE):
-        set_device_type("tracker")
-        set_device_field("Address", re.split(r"[:=]", line, 1)[1])
-        add_human_line(f"Tracker detected, id {device_state['Address']}.")
+        set_device_field("Pairing", "Tracker request received")
+        set_device_field("Mode", "Pairing")
+        receiver_pairing_request_seen = True
+        add_human_line("Receiver sees a tracker pairing request.")
         important = True
 
-    if re.search(r"receiver\s*address[:=]", line, re.IGNORECASE):
-        set_device_type("tracker")
-        value = re.split(r"[:=]", line, 1)[1]
-        set_device_field("Paired with", value)
-        add_human_line(f"Tracker paired with receiver {normalize_value(value)}.")
+    if device_address:
+        if last_device_type == "receiver" and receiver_pairing_request_seen:
+            set_device_type("receiver")
+            set_device_field("Paired with", device_address)
+            set_device_field("Pairing", "Paired")
+            set_device_field("Mode", "Paired")
+            receiver_pairing_request_seen = False
+            add_human_line(f"Receiver paired with tracker {device_address}.")
+        else:
+            set_device_type("receiver")
+            set_device_field("Address", device_address)
+            add_human_line(f"Receiver detected, address {device_address}.")
         important = True
 
-    if re.search(r"device\s*address[:=]", line, re.IGNORECASE):
+    if "saved devices" in lower or "pairing mode" in lower:
         set_device_type("receiver")
-        value = re.split(r"[:=]", line, 1)[1]
-        set_device_field("Address", value)
-        add_human_line(f"Receiver detected, address {normalize_value(value)}.")
         important = True
 
-    battery = parse_battery_line(line)
+    battery = parse_battery_line(cleaned)
     if battery:
         set_device_type("tracker")
         set_device_field("Battery", battery)
         add_human_line(f"Battery: {battery}.")
         important = True
 
-    if "pairing state" in lower:
-        state = normalize_value(re.split(r"[:=]", line, 1)[1] if re.search(r"[:=]", line) else line)
-        set_device_field("Pairing", state)
-        if "start" in state.lower():
+    pairing_state = extract_labeled_value(cleaned, r"pairing\s*state")
+    if pairing_state:
+        set_device_field("Pairing", pairing_state)
+        state_lower = pairing_state.lower()
+        if "start" in state_lower:
             set_device_field("Mode", "Pairing")
-        elif "stop" in state.lower():
+        elif "stop" in state_lower or "idle" in state_lower:
             set_device_field("Mode", "Normal")
-        elif "paired" in state.lower():
+        elif "paired" in state_lower:
             set_device_field("Mode", "Paired")
-        add_human_line(f"Pairing: {state}.")
-        important = True
-    elif "pairing request received" in lower:
-        set_device_field("Pairing", "Tracker request received")
-        set_device_field("Mode", "Pairing")
-        add_human_line("Receiver sees a tracker pairing request.")
+        add_human_line(f"Pairing: {pairing_state}.")
         important = True
     elif re.search(r"\bpaired\b", lower):
         set_device_field("Pairing", "Paired")
@@ -481,7 +510,7 @@ def process_device_line(line):
         add_human_line("Pairing completed.")
         important = True
 
-    channel_match = re.search(r"afh(?: default)? channel[:=]\s*(-?\d+)", line, re.IGNORECASE)
+    channel_match = re.search(r"afh(?: default)? channel[:=]\s*(-?\d+)", cleaned, re.IGNORECASE)
     if channel_match:
         channel = channel_match.group(1)
         set_device_field("AFH channel", channel)
@@ -491,11 +520,11 @@ def process_device_line(line):
             add_human_line("AFH channel is 100, discovery channel is correct.")
         important = True
 
-    epoch_match = re.search(r"afh epoch[:=]\s*(\d+)", line, re.IGNORECASE)
+    epoch_match = re.search(r"afh epoch[:=]\s*(\d+)", cleaned, re.IGNORECASE)
     if epoch_match:
         afh_debug_state["AFH epoch"] = epoch_match.group(1)
 
-    errors_match = re.search(r"(?:afh )?consecutive tx errors[:=]\s*(\d+)", line, re.IGNORECASE)
+    errors_match = re.search(r"(?:afh )?consecutive tx errors[:=]\s*(\d+)", cleaned, re.IGNORECASE)
     if errors_match:
         errors = errors_match.group(1)
         set_device_field("AFH errors", errors)
@@ -1108,7 +1137,8 @@ def download_firmware():
 
 def update_afh_debug_state(line):
     global pairing_request_spam_count, pairing_hint_shown
-    lower = line.lower()
+    cleaned = strip_log_prefix(line)
+    lower = cleaned.lower()
     patterns = {
         "Tracker ID": [r"tracker\s*id[:=]\s*([^,;]+)", r"id[:=]\s*([^,;]+)"],
         "Receiver address": [r"receiver\s*address[:=]\s*([^,;]+)", r"rx\s*addr(?:ess)?[:=]\s*([^,;]+)"],
@@ -1119,7 +1149,7 @@ def update_afh_debug_state(line):
     }
     for field, regexes in patterns.items():
         for regex in regexes:
-            match = re.search(regex, line, re.IGNORECASE)
+            match = re.search(regex, cleaned, re.IGNORECASE)
             if match:
                 afh_debug_state[field] = match.group(1).strip()
                 break
@@ -1131,7 +1161,7 @@ def update_afh_debug_state(line):
         pairing_request_spam_count = 0
         afh_debug_state["pairing state"] = "Paired"
     elif "pair" in lower and "request" not in lower:
-        afh_debug_state["pairing state"] = line.strip()
+        afh_debug_state["pairing state"] = cleaned
 
     if pairing_request_spam_count >= 3 and not pairing_hint_shown:
         pairing_hint_shown = True
@@ -1192,24 +1222,12 @@ tracker_btn_frame = ctk.CTkFrame(tracker_tab)
 tracker_btn_frame.pack(pady=10, padx=10)
 
 ui_btn(tracker_btn_frame, "Info", lambda: send_command("info"), "Get device information").grid(row=0, column=0, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Reboot", lambda: send_command("reboot"), "Soft reset the device").grid(row=0, column=1, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Scan", lambda: send_command("scan"), "Restart sensor scan").grid(row=0, column=2, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Calibrate", lambda: send_command("calibrate"), "Calibrate sensor ZRO").grid(row=0, column=3, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Calibrate 6 Sides", lambda: send_command("6-side"), "Calibrate 6-side accelerometer").grid(row=0, column=4, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Mag Clear", lambda: send_command("mag"), "Clear magnetometer calibration").grid(row=0, column=5, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Battery", lambda: send_command("battery"), "Get battery information").grid(row=0, column=6, padx=5, pady=5)
-
-ui_btn(tracker_btn_frame, "Pair AFH", pair_afh, "Set channel 100, print AFH info, then pair safely").grid(row=1, column=0, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Clear+Pair AFH", clear_pair_afh, "Clear pairing data, set channel 100, then pair", width=135).grid(row=1, column=1, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=1, column=2, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Uptime", lambda: send_command("uptime"), "Get device uptime").grid(row=1, column=3, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Debug", lambda: send_command("debug"), "Print debug log").grid(row=1, column=4, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(row=1, column=5, padx=5, pady=5)
-
-ui_btn(tracker_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Run AFH Debug", run_afh_debug, "Run info, AFH info, list, and battery", width=135).grid(row=2, column=2, padx=5, pady=5)
-ui_btn(tracker_btn_frame, "Save Debug Log", save_debug_log, "Save parsed AFH state and console text", width=135).grid(row=2, column=3, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Pair AFH", pair_afh, "Set channel 100, print AFH info, then pair safely").grid(row=0, column=1, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Clear+Pair AFH", clear_pair_afh, "Clear pairing data, set channel 100, then pair", width=135).grid(row=0, column=2, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Battery", lambda: send_command("battery"), "Get battery information").grid(row=0, column=3, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=0, column=4, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "Debug Log", save_debug_log, "Save parsed AFH state and console text", width=120).grid(row=0, column=5, padx=5, pady=5)
+ui_btn(tracker_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=0, column=6, padx=5, pady=5)
 
 # Receiver tab
 receiver_tab = tab_view.add("Receiver")
@@ -1218,20 +1236,11 @@ receiver_btn_frame.pack(pady=10, padx=10)
 
 ui_btn(receiver_btn_frame, "Info", lambda: send_command("info"), "Get device information").grid(row=0, column=0, padx=5, pady=5)
 ui_btn(receiver_btn_frame, "List", lambda: send_command("list"), "Get paired devices").grid(row=0, column=1, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Reboot", lambda: send_command("reboot"), "Soft reset the device").grid(row=0, column=2, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Remove", lambda: send_command("remove"), "Remove last paired device").grid(row=0, column=3, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Start AFH Pairing", pair_afh, "Set channel 100, print AFH info, then enter receiver pairing", width=145).grid(row=0, column=4, padx=5, pady=5)
-
-ui_btn(receiver_btn_frame, "✖ Saved Devices", lambda: send_command("clear"), "Clear stored devices").grid(row=1, column=0, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=1, column=1, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Uptime", lambda: send_command("uptime"), "Get device uptime").grid(row=1, column=2, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Meow!", lambda: send_command("meow"), "Meow!").grid(row=1, column=3, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "⎋ Pairing Mode", lambda: send_command("exit"), "Exit pairing mode").grid(row=1, column=4, padx=5, pady=5)
-
-ui_btn(receiver_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=2, column=0, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Force Channel 100", lambda: send_command("afh_set_channel 100"), "Force AFH radio channel 100 / 2500 MHz", width=145).grid(row=2, column=1, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Run AFH Debug", run_afh_debug, "Run info, AFH info, list, and battery", width=135).grid(row=2, column=2, padx=5, pady=5)
-ui_btn(receiver_btn_frame, "Save Debug Log", save_debug_log, "Save parsed AFH state and console text", width=135).grid(row=2, column=3, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Start AFH Pairing", pair_afh, "Set channel 100, print AFH info, then enter receiver pairing", width=145).grid(row=0, column=2, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Exit Pairing", lambda: send_command("exit"), "Exit pairing mode", width=120).grid(row=0, column=3, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "AFH Info", lambda: send_command("afh_info"), "Show AFH channel, state, errors, and epoch").grid(row=0, column=4, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "Debug Log", save_debug_log, "Save parsed AFH state and console text", width=120).grid(row=0, column=5, padx=5, pady=5)
+ui_btn(receiver_btn_frame, "DFU", lambda: send_command("dfu"), "Enter DFU bootloader (if available)").grid(row=0, column=6, padx=5, pady=5)
 
 # Settings tab
 settings_tab = tab_view.add("Settings")
