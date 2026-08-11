@@ -6,6 +6,7 @@ import threading
 import time
 import sys
 import os
+import argparse
 import shutil
 import requests
 import subprocess
@@ -240,6 +241,123 @@ def fetch_latest_firmware_assets():
         return {}
 
 
+
+def early_strip_log_prefix(line):
+    line = re.sub(r"\x1b\[[0-9;]*m", "", str(line))
+    line = re.sub(r"^\[[^\]]+\]\s*<[^>]+>\s*[^:]+:\s*", "", line)
+    return line.strip()
+
+
+def early_list_serial_ports():
+    ports = serial.tools.list_ports.comports()
+    if sys.platform.startswith("linux"):
+        return [p.device for p in ports if "ttyACM" in p.device or "ttyUSB" in p.device]
+    return [p.device for p in ports]
+
+
+def early_detect_state(line, state):
+    cleaned = early_strip_log_prefix(line)
+    lower = cleaned.lower()
+
+    def labeled(label):
+        match = re.search(rf"{label}\s*[:=]\s*([^\r\n,;]+)", cleaned, re.IGNORECASE)
+        return match.group(1).strip().strip("[]") if match else None
+
+    if labeled(r"tracker\s*id"):
+        state["Device type"] = "Tracker"
+        state["Address"] = labeled(r"tracker\s*id")
+    if labeled(r"receiver\s*address"):
+        state["Device type"] = "Tracker"
+        state["Paired with"] = labeled(r"receiver\s*address")
+        state["Pairing"] = "Paired"
+        state["Mode"] = "Paired"
+    if labeled(r"device\s*address"):
+        state["Device type"] = "Receiver"
+        if state.get("Mode") == "Pairing":
+            state["Paired with"] = labeled(r"device\s*address")
+            state["Pairing"] = "Paired"
+            state["Mode"] = "Paired"
+        else:
+            state["Address"] = labeled(r"device\s*address")
+    if "rx pairing request" in lower or "pairing request received" in lower or "pairing mode" in lower:
+        state["Device type"] = "Receiver"
+        state["Mode"] = "Pairing"
+        state["Pairing"] = "Tracker request received"
+    battery = re.search(r"(?:battery|bat)[^0-9]*(\d+(?:\.\d+)?\s*(?:%|v|mv))", cleaned, re.IGNORECASE)
+    if battery:
+        state["Device type"] = "Tracker"
+        state["Battery"] = battery.group(1).strip()
+    pairing = labeled(r"pairing\s*state")
+    if pairing:
+        state["Pairing"] = pairing
+        low = pairing.lower()
+        state["Mode"] = "Pairing" if "start" in low else "Normal" if "stop" in low or "idle" in low else "Paired" if "paired" in low else state.get("Mode", "Unknown")
+    channel = re.search(r"afh(?: default)? channel[:=]\s*(-?\d+)", cleaned, re.IGNORECASE)
+    if channel:
+        state["AFH channel"] = channel.group(1)
+    errors = re.search(r"(?:afh )?consecutive tx errors[:=]\s*(\d+)", cleaned, re.IGNORECASE)
+    if errors:
+        state["AFH errors"] = errors.group(1)
+
+
+def early_format_state(state):
+    return "\n".join(["Smart SmolSlime status", "======================="] + [f"{field}: {state.get(field, 'Unknown')}" for field in DEVICE_STATE_FIELDS])
+
+
+def early_run_console_mode(port=None, baudrate=115200, raw=False, commands=None):
+    ports = early_list_serial_ports()
+    if not port:
+        if not ports:
+            print("No serial ports found. Connect receiver/tracker and retry.", file=sys.stderr)
+            return 2
+        port = ports[0]
+    state = device_state.copy()
+    previous = None
+    command_list = commands or ["info", "afh_info", "list", "battery"]
+    print(f"Opening {port} at {baudrate} baud. Press Ctrl+C to stop.")
+    try:
+        with serial.Serial(port, baudrate, timeout=0.25) as serial_port:
+            time.sleep(0.4)
+            for command in command_list:
+                serial_port.write((command + "\n").encode())
+                print(f"> {command}")
+                time.sleep(0.08)
+            while True:
+                raw_line = serial_port.readline()
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                early_detect_state(line, state)
+                current = tuple(state.get(field, "Unknown") for field in DEVICE_STATE_FIELDS)
+                if raw:
+                    print(line)
+                if current != previous:
+                    print("\n" + early_format_state(state) + "\n", flush=True)
+                    previous = current
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+        return 0
+    except serial.SerialException as exc:
+        print(f"Serial error: {exc}", file=sys.stderr)
+        return 1
+
+
+def early_parse_cli_args():
+    parser = argparse.ArgumentParser(description="SmolSlime AFH configurator")
+    parser.add_argument("--console", action="store_true", help="Run smart terminal console instead of GUI")
+    parser.add_argument("--port", help="Serial port for --console mode")
+    parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate for --console mode")
+    parser.add_argument("--raw", action="store_true", help="Show raw firmware log lines in --console mode")
+    parser.add_argument("--cmd", action="append", dest="commands", help="Command to send on connect; can be used multiple times")
+    return parser.parse_args()
+
+
+EARLY_CLI_ARGS = early_parse_cli_args()
+if EARLY_CLI_ARGS.console:
+    raise SystemExit(early_run_console_mode(EARLY_CLI_ARGS.port, EARLY_CLI_ARGS.baudrate, EARLY_CLI_ARGS.raw, EARLY_CLI_ARGS.commands))
+
 # Start base window, size & name
 app = ctk.CTk()
 app.title("SmolSlime Configurator")
@@ -413,6 +531,20 @@ def add_human_line(text):
     append_text(f"• {text}\n", "success")
 
 
+def format_device_summary():
+    lines = [
+        "Smart SmolSlime status",
+        "=======================",
+    ]
+    for field in DEVICE_STATE_FIELDS:
+        lines.append(f"{field}: {device_state.get(field, 'Unknown')}")
+    if last_human_lines:
+        lines.append("")
+        lines.append("Important events:")
+        lines.extend(f"- {line}" for line in last_human_lines[-6:])
+    return "\n".join(lines)
+
+
 def refresh_device_summary():
     if "device_cards" not in globals():
         return
@@ -459,6 +591,22 @@ def process_device_line(line):
         add_human_line(f"Tracker paired with receiver {receiver_address}.")
         important = True
 
+    receiver_markers = (
+        "rx pairing request",
+        "pairing request received",
+        "pairing mode",
+        "saved devices",
+        "hid",
+        "usb receiver",
+        "dongle",
+    )
+    tracker_markers = (
+        "tracker id",
+        "receiver address",
+        "battery",
+        "imu",
+    )
+
     if "rx pairing request" in lower or "pairing request received" in lower:
         set_device_type("receiver")
         set_device_field("Pairing", "Tracker request received")
@@ -481,7 +629,7 @@ def process_device_line(line):
             add_human_line(f"Receiver detected, address {device_address}.")
         important = True
 
-    if "saved devices" in lower or "pairing mode" in lower:
+    if any(marker in lower for marker in receiver_markers) and not any(marker in lower for marker in tracker_markers):
         set_device_type("receiver")
         important = True
 
@@ -538,6 +686,61 @@ def process_device_line(line):
 
     refresh_device_summary()
     return important
+
+def console_print_summary(previous_snapshot):
+    snapshot = tuple(device_state.get(field, "Unknown") for field in DEVICE_STATE_FIELDS)
+    if snapshot != previous_snapshot:
+        print("\n" + format_device_summary() + "\n", flush=True)
+        return snapshot
+    return previous_snapshot
+
+
+def run_console_mode(port=None, baudrate=115200, raw=False, commands=None):
+    ports = list_serial_ports()
+    if not port:
+        if not ports:
+            print("No serial ports found. Connect receiver/tracker and retry.", file=sys.stderr)
+            return 2
+        port = ports[0]
+
+    print(f"Opening {port} at {baudrate} baud. Press Ctrl+C to stop.")
+    command_list = commands or ["info", "afh_info", "list", "battery"]
+    snapshot = tuple(device_state.get(field, "Unknown") for field in DEVICE_STATE_FIELDS)
+    try:
+        with serial.Serial(port, baudrate, timeout=0.25) as serial_port:
+            time.sleep(0.4)
+            for command in command_list:
+                serial_port.write((command + "\n").encode())
+                print(f"> {command}")
+                time.sleep(0.08)
+            while True:
+                raw_line = serial_port.readline()
+                if not raw_line:
+                    continue
+                line = raw_line.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                important = process_device_line(line)
+                update_afh_debug_state(line)
+                if raw or important:
+                    print(line)
+                snapshot = console_print_summary(snapshot)
+    except KeyboardInterrupt:
+        print("Stopped by user.")
+        return 0
+    except serial.SerialException as exc:
+        print(f"Serial error: {exc}", file=sys.stderr)
+        return 1
+
+
+def parse_cli_args():
+    parser = argparse.ArgumentParser(description="SmolSlime AFH configurator")
+    parser.add_argument("--console", action="store_true", help="Run smart terminal console instead of GUI")
+    parser.add_argument("--port", help="Serial port for --console mode")
+    parser.add_argument("--baudrate", type=int, default=115200, help="Serial baudrate for --console mode")
+    parser.add_argument("--raw", action="store_true", help="Show raw firmware log lines in --console mode")
+    parser.add_argument("--cmd", action="append", dest="commands", help="Command to send on connect; can be used multiple times")
+    return parser.parse_args()
 
 def send_commands(commands):
     for command in commands:

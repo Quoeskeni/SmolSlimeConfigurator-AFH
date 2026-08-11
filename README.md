@@ -95,6 +95,21 @@ If the console prints `Pairing request received` three or more times without `Pa
 
 > Tracker requests are reaching a receiver, but no pair ACK was accepted yet. Keep receiver in Start AFH Pairing, and use Pair AFH on one tracker at a time.
 
+## Smart GUI and console modes
+
+The configurator now has two ways to read the same receiver/tracker serial stream:
+
+- **Smart GUI mode** is the default. It hides noisy firmware spam and updates human-readable cards for device type, current mode, pairing state, paired address, battery, AFH channel, radio errors, and address. The app keeps auto-switching to **Tracker** or **Receiver** when those markers appear in the COM log.
+- **Raw console** can still be enabled from the GUI switch when you need firmware-level debugging.
+- **Terminal console mode** is available without launching the GUI:
+
+```bash
+python SmolSlimeConfiguratorV9.py --console --port COM3 --raw
+python SmolSlimeConfiguratorV9.py --console --port /dev/ttyACM0 --cmd info --cmd afh_info --cmd list
+```
+
+If `--port` is omitted, the first detected USB serial port is used. Console mode sends `info`, `afh_info`, `list`, and `battery` on connect by default, then prints a refreshed smart summary whenever the firmware output changes detected state.
+
 ## Standard SlimeVR server behavior
 
 No SlimeVR server patch is required. With compatible AFH firmware, the receiver remains a standard HID dongle from the server's point of view.
@@ -166,6 +181,21 @@ python SmolSlimeConfiguratorV9.py
 - **Force Channel 100** отправляет `afh_set_channel 100`.
 
 Если трекер три или больше раз пишет `Pairing request received`, но нет `Paired`, конфигуратор покажет подсказку: запросы трекера доходят до ресивера, но ACK пейринга ещё не принят. Держите ресивер в **Start AFH Pairing** и используйте **Pair AFH** только для одного трекера за раз.
+
+## Умный GUI и режим терминальной консоли
+
+Конфигуратор теперь умеет читать один и тот же serial-поток ресивера/трекера двумя способами:
+
+- **Smart GUI mode** включён по умолчанию. Он прячет шумные firmware-логи и обновляет понятные карточки: тип устройства, режим, состояние pairing, с кем спарено, батарея, AFH-канал, radio errors и адрес. Вкладка **Tracker** или **Receiver** выбирается автоматически по маркерам из COM-лога.
+- **Raw console** остаётся переключателем в GUI для низкоуровневой отладки прошивки.
+- **Terminal console mode** запускается без GUI:
+
+```bash
+python SmolSlimeConfiguratorV9.py --console --port COM3 --raw
+python SmolSlimeConfiguratorV9.py --console --port /dev/ttyACM0 --cmd info --cmd afh_info --cmd list
+```
+
+Если `--port` не указан, берётся первый найденный USB serial-порт. По умолчанию console mode отправляет `info`, `afh_info`, `list` и `battery`, а затем печатает обновлённую человеческую сводку при каждом изменении распознанного состояния.
 
 ## SlimeVR server
 
