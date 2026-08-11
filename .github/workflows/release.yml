@@ -1,0 +1,90 @@
+name: Build Configurator Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Release tag to create/update
+        required: true
+        default: v9-afh-latest
+  push:
+    tags:
+      - 'v9-afh-*'
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            suffix: .exe
+            console_name: SmolSlimeConfigurator.exe
+            gui_name: SmolSlimeConfigurator-GUI.exe
+          - os: ubuntu-latest
+            suffix: ''
+            console_name: SmolSlimeConfigurator-linux
+            gui_name: SmolSlimeConfigurator-GUI-linux
+          - os: macos-latest
+            suffix: ''
+            console_name: SmolSlimeConfigurator-macos
+            gui_name: SmolSlimeConfigurator-GUI-macos
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Install dependencies
+        run: python -m pip install --upgrade pip pyinstaller customtkinter pyserial requests
+      - name: Build console binary
+        run: pyinstaller --onefile --name SmolSlimeConfigurator SmolSlimeConfiguratorV9.py
+      - name: Build GUI binary
+        run: pyinstaller --onefile --windowed --name SmolSlimeConfigurator-GUI SmolSlimeConfiguratorV9one.py
+      - name: Normalize artifact names
+        shell: bash
+        run: |
+          mkdir -p release-assets
+          cp "dist/SmolSlimeConfigurator${{ matrix.suffix }}" "release-assets/${{ matrix.console_name }}"
+          cp "dist/SmolSlimeConfigurator-GUI${{ matrix.suffix }}" "release-assets/${{ matrix.gui_name }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: configurator-${{ matrix.os }}
+          path: release-assets/*
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v5
+        with:
+          path: release-assets
+          merge-multiple: true
+      - name: Resolve tag
+        id: tag
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            echo "tag=${{ inputs.tag }}" >> "$GITHUB_OUTPUT"
+          else
+            echo "tag=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Create or update release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG_NAME: ${{ steps.tag.outputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! gh release view "$TAG_NAME" >/dev/null 2>&1; then
+            gh release create "$TAG_NAME" --title "SmolSlime Configurator AFH ${TAG_NAME}" --notes "AFH smart configurator build with latest parser and pairing fixes."
+          fi
+          for asset in release-assets/*; do
+            name=$(basename "$asset")
+            existing=$(gh release view "$TAG_NAME" --json assets --jq ".assets[] | select(.name == \"$name\") | .name" || true)
+            if [ -n "$existing" ]; then
+              gh release delete-asset "$TAG_NAME" "$name" -y
+            fi
+          done
+          gh release upload "$TAG_NAME" release-assets/* --clobber
