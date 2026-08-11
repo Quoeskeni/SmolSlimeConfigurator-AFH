@@ -1,8 +1,4 @@
-diff --git a/README.md b/README.md
-index dd24cbd1faacd89e3d45d47c069f78002290c05f..a5a26a534ae2ed9c003ad6778c29c312ab3ca4f8 100644
---- a/README.md
-+++ b/README.md
-@@ -1,36 +1,37 @@
+
  # SmolSlimeConfigurator <img src="icon.png" width="32" height="32" alt="SmolSlimeConfiguratorICON">
  Pure Simple UI Configurator for SlimeVR Smol Slimes (Unofficial)
  
