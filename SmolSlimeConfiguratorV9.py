@@ -248,6 +248,30 @@ def early_strip_log_prefix(line):
     return line.strip()
 
 
+
+
+def early_parse_battery_line(line):
+    lower = line.lower()
+    ignored_contexts = (
+        "calibration",
+        "cycle",
+        "runtime",
+        "coverage",
+    )
+    if any(context in lower for context in ignored_contexts):
+        return None
+
+    patterns = [
+        r"^\s*battery(?:\s+voltage)?[:=]\s*([^,;]+)",
+        r"^\s*bat(?:tery)?[:=]\s*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
+        r"^\s*(?:adc|vbat)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            return normalize_value(match.group(1))
+    return None
+
 def early_list_serial_ports():
     ports = serial.tools.list_ports.comports()
     if sys.platform.startswith("linux"):
@@ -283,10 +307,10 @@ def early_detect_state(line, state):
         state["Device type"] = "Receiver"
         state["Mode"] = "Pairing"
         state["Pairing"] = "Tracker request received"
-    battery = re.search(r"(?:battery|bat)[^0-9]*(\d+(?:\.\d+)?\s*(?:%|v|mv))", cleaned, re.IGNORECASE)
+    battery = early_parse_battery_line(cleaned)
     if battery:
         state["Device type"] = "Tracker"
-        state["Battery"] = battery.group(1).strip()
+        state["Battery"] = battery
     pairing = labeled(r"pairing\s*state")
     if pairing:
         state["Pairing"] = pairing
@@ -339,8 +363,8 @@ def early_run_console_mode(port=None, baudrate=115200, raw=False, commands=None)
     except KeyboardInterrupt:
         print("Stopped by user.")
         return 0
-    except serial.SerialException as exc:
-        print(f"Serial error: {exc}", file=sys.stderr)
+    except (OSError, serial.SerialException) as exc:
+        print(f"Device disconnected or serial error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -555,10 +579,20 @@ def refresh_device_summary():
 
 
 def parse_battery_line(line):
+    lower = line.lower()
+    ignored_contexts = (
+        "calibration",
+        "cycle",
+        "runtime",
+        "coverage",
+    )
+    if any(context in lower for context in ignored_contexts):
+        return None
+
     patterns = [
-        r"battery(?: voltage)?[:=]\s*([^,;]+)",
-        r"bat(?:tery)?[^0-9]*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
-        r"(\d+(?:\.\d+)?)\s*%",
+        r"^\s*battery(?:\s+voltage)?[:=]\s*([^,;]+)",
+        r"^\s*bat(?:tery)?[:=]\s*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
+        r"^\s*(?:adc|vbat)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))",
     ]
     for pattern in patterns:
         match = re.search(pattern, line, re.IGNORECASE)
@@ -613,7 +647,7 @@ def process_device_line(line):
         set_device_field("Mode", "Pairing")
         receiver_pairing_request_seen = True
         add_human_line("Receiver sees a tracker pairing request.")
-        important = True
+        important = False
 
     if device_address:
         if last_device_type == "receiver" and receiver_pairing_request_seen:
@@ -629,7 +663,12 @@ def process_device_line(line):
             add_human_line(f"Receiver detected, address {device_address}.")
         important = True
 
-    if any(marker in lower for marker in receiver_markers) and not any(marker in lower for marker in tracker_markers):
+    if (
+        any(marker in lower for marker in receiver_markers)
+        and not any(marker in lower for marker in tracker_markers)
+        and "rx pairing request" not in lower
+        and "pairing request received" not in lower
+    ):
         set_device_type("receiver")
         important = True
 
@@ -728,8 +767,8 @@ def run_console_mode(port=None, baudrate=115200, raw=False, commands=None):
     except KeyboardInterrupt:
         print("Stopped by user.")
         return 0
-    except serial.SerialException as exc:
-        print(f"Serial error: {exc}", file=sys.stderr)
+    except (OSError, serial.SerialException) as exc:
+        print(f"Device disconnected or serial error: {exc}", file=sys.stderr)
         return 1
 
 
@@ -861,7 +900,7 @@ def read_serial():
             else:
                 time.sleep(0.01)
         except (OSError, serial.SerialException) as e:
-            append_text(f"Device disconnected: {e}\n", "error")
+            append_text("Device disconnected; waiting for it to reappear...\n", "error")
             disconnect_serial()
             attempt_reconnect()
             break
