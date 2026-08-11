@@ -627,7 +627,6 @@ def process_device_line(line):
 
     receiver_markers = (
         "rx pairing request",
-        "pairing request received",
         "pairing mode",
         "saved devices",
         "hid",
@@ -641,12 +640,17 @@ def process_device_line(line):
         "imu",
     )
 
-    if "rx pairing request" in lower or "pairing request received" in lower:
+    if "rx pairing request" in lower:
         set_device_type("receiver")
         set_device_field("Pairing", "Tracker request received")
         set_device_field("Mode", "Pairing")
         receiver_pairing_request_seen = True
         add_human_line("Receiver sees a tracker pairing request.")
+        important = False
+    elif "pairing request received" in lower:
+        set_device_type("tracker")
+        set_device_field("Pairing", "Pair ACK received")
+        set_device_field("Mode", "Pairing")
         important = False
 
     if device_address:
@@ -657,6 +661,10 @@ def process_device_line(line):
             set_device_field("Mode", "Paired")
             receiver_pairing_request_seen = False
             add_human_line(f"Receiver paired with tracker {device_address}.")
+        elif last_device_type == "tracker":
+            set_device_type("tracker")
+            set_device_field("Address", device_address)
+            add_human_line(f"Tracker detected, address {device_address}.")
         else:
             set_device_type("receiver")
             set_device_field("Address", device_address)
@@ -667,7 +675,6 @@ def process_device_line(line):
         any(marker in lower for marker in receiver_markers)
         and not any(marker in lower for marker in tracker_markers)
         and "rx pairing request" not in lower
-        and "pairing request received" not in lower
     ):
         set_device_type("receiver")
         important = True
