@@ -1,0 +1,26 @@
+Codex status / инструкция как отвечать
+======================================
+
+Пиши следующий ответ в репозиторий prompt в файл chat.txt или обычным сообщением здесь, если файл недоступен.
+Если хочешь остановить такой файловый чат, удали chat.txt в prompt-репозитории, как ты и предлагал.
+
+Текущая итерация:
+- Я проверил связку не со стороны SlimeVR Server, а со стороны receiver firmware, потому что сервер должен видеть донгл как обычный HID.
+- Нашёл вероятную причину сценария «pairing вроде есть, а серверу не прилетает ни одного полезного пакета»: receiver до прохождения DETECTION_THRESHOLD выкидывал первые пакеты трекера, включая регистрационные/status/runtime пакеты, которые SlimeVR использует для появления устройства.
+- В форке receiver firmware изменил фильтр: мусорные/зарезервированные receiver packets всё ещё отбрасываются, но startup packets типов 0(info), 3(status), 5(runtime) теперь сразу идут в HID даже во время прогрева detection threshold.
+- Это не требует патча SlimeVR Server-AFH.
+
+Что проверить на железе после сборки/прошивки receiver:
+1. Прошей receiver из нового PR receiver firmware.
+2. Прошей tracker совместимой AFH-сборкой.
+3. Открой SlimeVR Server и подключи receiver по USB.
+4. Pair: receiver -> Start AFH Pairing, tracker -> Pair AFH / Clear+Pair AFH при старом pairing.
+5. В логах receiver ищи строки вида: Forwarding startup packet type 0/3/5 for tracker N before detection threshold.
+6. Если пакетов всё ещё ноль, пришли сюда/в prompt/chat.txt:
+   - receiver serial log от старта USB до 20 секунд после движения трекера;
+   - tracker serial log за тот же момент;
+   - скрин/лог SlimeVR Server: HID dongle найден или нет, появляются ли trackers.
+
+Важное:
+- Переданный GitHub PAT я не печатаю в команды и не сохраняю в файлы.
+- Я не буду патчить SlimeVR Server без крайней необходимости: сначала добиваем receiver/tracker HID pipeline.
