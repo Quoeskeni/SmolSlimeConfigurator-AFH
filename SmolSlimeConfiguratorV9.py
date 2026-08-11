@@ -257,19 +257,26 @@ def early_parse_battery_line(line):
         "cycle",
         "runtime",
         "coverage",
+        "updated",
+        "waiting",
+        "not available",
+        "none",
     )
     if any(context in lower for context in ignored_contexts):
         return None
 
-    patterns = [
-        r"^\s*battery(?:\s+voltage)?[:=]\s*([^,;]+)",
-        r"^\s*bat(?:tery)?[:=]\s*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
-        r"^\s*(?:adc|vbat)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, line, re.IGNORECASE)
-        if match:
-            return normalize_value(match.group(1))
+    soc = re.search(r"(?:battery\s+soc|state\s+of\s+charge|soc)[:=]?\s*(?:\d+(?:\.\d+)?\s*%\s*->\s*)?(\d+(?:\.\d+)?\s*%)", line, re.IGNORECASE)
+    if soc:
+        return normalize_value(soc.group(1))
+
+    battery = re.search(r"^\s*bat(?:tery)?(?:\s+percent|\s+level)?[:=]\s*(\d+(?:\.\d+)?\s*%)", line, re.IGNORECASE)
+    if battery:
+        return normalize_value(battery.group(1))
+
+    voltage = re.search(r"^\s*(?:battery\s+voltage|bat|adc|vbat|voltage)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))", line, re.IGNORECASE)
+    if voltage:
+        return normalize_value(voltage.group(1))
+
     return None
 
 def early_list_serial_ports():
@@ -585,19 +592,26 @@ def parse_battery_line(line):
         "cycle",
         "runtime",
         "coverage",
+        "updated",
+        "waiting",
+        "not available",
+        "none",
     )
     if any(context in lower for context in ignored_contexts):
         return None
 
-    patterns = [
-        r"^\s*battery(?:\s+voltage)?[:=]\s*([^,;]+)",
-        r"^\s*bat(?:tery)?[:=]\s*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
-        r"^\s*(?:adc|vbat)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))",
-    ]
-    for pattern in patterns:
-        match = re.search(pattern, line, re.IGNORECASE)
-        if match:
-            return normalize_value(match.group(1))
+    soc = re.search(r"(?:battery\s+soc|state\s+of\s+charge|soc)[:=]?\s*(?:\d+(?:\.\d+)?\s*%\s*->\s*)?(\d+(?:\.\d+)?\s*%)", line, re.IGNORECASE)
+    if soc:
+        return normalize_value(soc.group(1))
+
+    battery = re.search(r"^\s*bat(?:tery)?(?:\s+percent|\s+level)?[:=]\s*(\d+(?:\.\d+)?\s*%)", line, re.IGNORECASE)
+    if battery:
+        return normalize_value(battery.group(1))
+
+    voltage = re.search(r"^\s*(?:battery\s+voltage|bat|adc|vbat|voltage)[:=]\s*(\d+(?:\.\d+)?\s*(?:v|mv))", line, re.IGNORECASE)
+    if voltage:
+        return normalize_value(voltage.group(1))
+
     return None
 
 
@@ -653,15 +667,18 @@ def process_device_line(line):
         set_device_field("Mode", "Pairing")
         important = False
 
+    stored_device = re.fullmatch(r"[0-9A-Fa-f]{12}", cleaned)
+    if stored_device and last_device_type == "receiver":
+        tracker_addr = cleaned.upper()
+        set_device_field("Paired with", tracker_addr)
+        set_device_field("Pairing", "Paired")
+        set_device_field("Mode", "Paired")
+        receiver_pairing_request_seen = False
+        add_human_line(f"Receiver stored tracker {tracker_addr}.")
+        important = True
+
     if device_address:
-        if last_device_type == "receiver" and receiver_pairing_request_seen:
-            set_device_type("receiver")
-            set_device_field("Paired with", device_address)
-            set_device_field("Pairing", "Paired")
-            set_device_field("Mode", "Paired")
-            receiver_pairing_request_seen = False
-            add_human_line(f"Receiver paired with tracker {device_address}.")
-        elif last_device_type == "tracker":
+        if last_device_type == "tracker":
             set_device_type("tracker")
             set_device_field("Address", device_address)
             add_human_line(f"Tracker detected, address {device_address}.")
