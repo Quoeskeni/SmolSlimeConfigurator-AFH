@@ -10,6 +10,8 @@ Pure Simple UI Configurator for SlimeVR Smol Slimes (Unofficial), adapted for St
 - **Standard SlimeVR compatibility** — the SlimeVR server sees the receiver as a normal HID dongle; AFH changes are firmware-side and configurator-side only.
 - **Automatic firmware updater** — downloads `.uf2` and `.hex` files from GitHub releases.
 - **GitHub Actions artifact fallback** — if a firmware repo has no latest release, the configurator checks workflow artifacts, downloads a matching StackedSmol/Receiver zip, extracts it, finds the firmware file, and flashes it.
+- **Smart device detection** — automatically recognizes whether the selected COM port is a tracker or receiver, switches the UI tab, and shows a human-readable status panel.
+- **Smart/Raw console modes** — Smart mode summarizes noisy firmware logs for normal users; Raw console mode keeps the full developer log visible.
 - **AFH diagnostics** — parses serial output into a debug state, detects repeated pairing requests without ACK, and can save a full debug log.
 - **Custom firmware support** — flash your own `.uf2` or `.hex` files.
 - **Cross-platform** — Windows, Linux, macOS, and Android-capable Python workflow.
@@ -31,6 +33,13 @@ Use the project releases page when you want a packaged app:
 python -m pip install customtkinter pyserial requests
 python SmolSlimeConfiguratorV9.py
 ```
+
+### Release binaries
+
+GitHub releases publish two flavors per OS:
+
+- `SmolSlimeConfigurator*` — normal console-capable build; useful when you want a terminal window for troubleshooting.
+- `SmolSlimeConfigurator-GUI*` — windowed GUI build; cleaner for ordinary use.
 
 ### Option 3: build your own executable
 
@@ -77,7 +86,8 @@ Use this when StackedSmol AFH pairing is unreliable or a tracker was paired to o
 - **Pair AFH** sends `afh_set_channel 100`, `afh_info`, then `pair`. It does not clear saved data.
 - **Clear+Pair AFH** shows a warning and, if confirmed, sends `clear`, `afh_set_channel 100`, `afh_info`, then `pair`.
 - **Run AFH Debug** sends `info`, `afh_info`, `list`, and `battery`.
-- **Save Debug Log** saves the parsed AFH state and the entire console text to a `.txt` file.
+- **Save Debug Log** saves the parsed AFH state and the console text to a `.txt` file.
+- **Raw console / сырые логи** toggles between human-friendly Smart mode and full firmware log mode.
 - **AFH Info** sends `afh_info`.
 - **Force Channel 100** sends `afh_set_channel 100`.
 
@@ -101,6 +111,8 @@ No SlimeVR server patch is required. With compatible AFH firmware, the receiver 
 - **Совместимость со стандартным SlimeVR** — сервер SlimeVR видит ресивер как обычный HID-донгл; изменения нужны только в прошивке и конфигураторе.
 - **Автообновление прошивки** — загрузка `.uf2` и `.hex` из GitHub Releases.
 - **Fallback на GitHub Actions artifacts** — если latest release отсутствует, конфигуратор ищет подходящий CI-артефакт StackedSmol/Receiver, скачивает zip, распаковывает его, находит прошивку и прошивает устройство.
+- **Умное определение устройства** — автоматически понимает, что сейчас на COM-порту: трекер или ресивер, переключает вкладку и показывает понятную панель состояния.
+- **Режим Smart/Raw console** — Smart mode превращает шумные firmware-логи в человеческие подсказки; Raw console показывает полный лог для отладки.
 - **AFH-диагностика** — парсит serial-лог в состояние отладки, замечает повторные запросы пейринга без ACK и сохраняет debug log.
 - **Своя прошивка** — можно выбрать локальный `.uf2` или `.hex` файл.
 
@@ -110,6 +122,13 @@ No SlimeVR server patch is required. With compatible AFH firmware, the receiver 
 python -m pip install customtkinter pyserial requests
 python SmolSlimeConfiguratorV9.py
 ```
+
+## Готовые файлы в релизах
+
+В GitHub Releases публикуются две версии под каждую ОС:
+
+- `SmolSlimeConfigurator*` — обычная сборка с консолью, удобна для отладки.
+- `SmolSlimeConfigurator-GUI*` — оконная GUI-сборка без лишней консоли, удобна для обычного пользователя.
 
 ## Как работает fallback на artifacts
 
@@ -141,7 +160,8 @@ python SmolSlimeConfiguratorV9.py
 - **Pair AFH** отправляет `afh_set_channel 100`, `afh_info`, затем `pair`. Сохранённые данные не очищаются.
 - **Clear+Pair AFH** показывает предупреждение и после подтверждения отправляет `clear`, `afh_set_channel 100`, `afh_info`, затем `pair`.
 - **Run AFH Debug** отправляет `info`, `afh_info`, `list`, `battery`.
-- **Save Debug Log** сохраняет распарсенное AFH-состояние и весь текст консоли в `.txt`.
+- **Save Debug Log** сохраняет распарсенное AFH-состояние и текст консоли в `.txt`.
+- **Raw console / сырые логи** переключает между понятным Smart mode и полными firmware-логами.
 - **AFH Info** отправляет `afh_info`.
 - **Force Channel 100** отправляет `afh_set_channel 100`.
 

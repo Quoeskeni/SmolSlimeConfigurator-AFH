@@ -37,6 +37,31 @@ AFH_DEBUG_FIELDS = [
 afh_debug_state = {field: "Unknown" for field in AFH_DEBUG_FIELDS}
 pairing_request_spam_count = 0
 pairing_hint_shown = False
+raw_console_enabled = False
+last_device_type = "unknown"
+last_mode_summary = "Waiting for device"
+last_human_lines = []
+
+DEVICE_STATE_FIELDS = [
+    "Device type",
+    "Mode",
+    "Pairing",
+    "Paired with",
+    "Battery",
+    "AFH channel",
+    "AFH errors",
+    "Address",
+]
+device_state = {
+    "Device type": "Unknown",
+    "Mode": "Disconnected",
+    "Pairing": "Unknown",
+    "Paired with": "Unknown",
+    "Battery": "Unknown",
+    "AFH channel": "Unknown",
+    "AFH errors": "Unknown",
+    "Address": "Unknown",
+}
 
 # Set theme
 ctk.set_appearance_mode("dark")
@@ -71,8 +96,10 @@ default_settings = {
     "tooltips": True,
     "favorites": ["Custom (User provided .uf2 / .hex)"],
     "seen_favorite_hint": False,
-    "firmware_source": "main", 
-    "custom_firmware_repo": ""
+    "firmware_source": "main",
+    "custom_firmware_repo": "",
+    "raw_console_enabled": False,
+    "auto_select_device_tab": True
 }
 
 settings = default_settings.copy()
@@ -327,6 +354,162 @@ def set_progress(value):
 def schedule_after(delay_ms, func, *args):
     run_on_ui_thread(app.after, delay_ms, lambda: func(*args))
 
+
+def set_raw_console_enabled(value):
+    global raw_console_enabled
+    raw_console_enabled = bool(value)
+    settings["raw_console_enabled"] = raw_console_enabled
+    save_settings()
+    if raw_console_enabled:
+        append_text("Raw console enabled: firmware logs will be shown verbatim.\n", "success")
+    else:
+        append_text("Smart view enabled: noisy firmware logs are summarized above.\n", "success")
+
+
+def normalize_value(value):
+    value = value.strip().strip("[]")
+    value = re.sub(r"\x1b\[[0-9;]*m", "", value)
+    return value.strip()
+
+
+def set_device_field(field, value):
+    value = normalize_value(str(value))
+    if value:
+        device_state[field] = value
+
+
+def set_device_type(device_type):
+    global last_device_type
+    if device_type not in ("tracker", "receiver"):
+        return
+    last_device_type = device_type
+    set_device_field("Device type", "Tracker" if device_type == "tracker" else "Receiver")
+    if settings.get("auto_select_device_tab", True):
+        tab_name = "Tracker" if device_type == "tracker" else "Receiver"
+        schedule_after(0, tab_view.set, tab_name)
+
+
+def add_human_line(text):
+    global last_human_lines
+    text = text.strip()
+    if not text:
+        return
+    if text in last_human_lines[-4:]:
+        return
+    last_human_lines.append(text)
+    last_human_lines = last_human_lines[-6:]
+    append_text(f"• {text}\n", "success")
+
+
+def refresh_device_summary():
+    if "device_cards" not in globals():
+        return
+    for field, label in device_cards.items():
+        label.configure(text=device_state.get(field, "Unknown"))
+    if "human_summary_label" in globals():
+        human_summary_label.configure(text="\n".join(last_human_lines[-4:]) or "No important events yet.")
+
+
+def parse_battery_line(line):
+    patterns = [
+        r"battery(?: voltage)?[:=]\s*([^,;]+)",
+        r"bat(?:tery)?[^0-9]*(\d+(?:\.\d+)?\s*(?:%|v|mv))",
+        r"(\d+(?:\.\d+)?)\s*%",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            return normalize_value(match.group(1))
+    return None
+
+
+def process_device_line(line):
+    lower = line.lower()
+    important = False
+
+    if "tracker id" in lower or "receiver address" in lower or "battery" in lower:
+        set_device_type("tracker")
+    if "device address" in lower or "saved devices" in lower or "pairing mode" in lower:
+        set_device_type("receiver")
+
+    if re.search(r"tracker\s*id[:=]", line, re.IGNORECASE):
+        set_device_type("tracker")
+        set_device_field("Address", re.split(r"[:=]", line, 1)[1])
+        add_human_line(f"Tracker detected, id {device_state['Address']}.")
+        important = True
+
+    if re.search(r"receiver\s*address[:=]", line, re.IGNORECASE):
+        set_device_type("tracker")
+        value = re.split(r"[:=]", line, 1)[1]
+        set_device_field("Paired with", value)
+        add_human_line(f"Tracker paired with receiver {normalize_value(value)}.")
+        important = True
+
+    if re.search(r"device\s*address[:=]", line, re.IGNORECASE):
+        set_device_type("receiver")
+        value = re.split(r"[:=]", line, 1)[1]
+        set_device_field("Address", value)
+        add_human_line(f"Receiver detected, address {normalize_value(value)}.")
+        important = True
+
+    battery = parse_battery_line(line)
+    if battery:
+        set_device_type("tracker")
+        set_device_field("Battery", battery)
+        add_human_line(f"Battery: {battery}.")
+        important = True
+
+    if "pairing state" in lower:
+        state = normalize_value(re.split(r"[:=]", line, 1)[1] if re.search(r"[:=]", line) else line)
+        set_device_field("Pairing", state)
+        if "start" in state.lower():
+            set_device_field("Mode", "Pairing")
+        elif "stop" in state.lower():
+            set_device_field("Mode", "Normal")
+        elif "paired" in state.lower():
+            set_device_field("Mode", "Paired")
+        add_human_line(f"Pairing: {state}.")
+        important = True
+    elif "pairing request received" in lower:
+        set_device_field("Pairing", "Tracker request received")
+        set_device_field("Mode", "Pairing")
+        add_human_line("Receiver sees a tracker pairing request.")
+        important = True
+    elif re.search(r"\bpaired\b", lower):
+        set_device_field("Pairing", "Paired")
+        set_device_field("Mode", "Paired")
+        add_human_line("Pairing completed.")
+        important = True
+
+    channel_match = re.search(r"afh(?: default)? channel[:=]\s*(-?\d+)", line, re.IGNORECASE)
+    if channel_match:
+        channel = channel_match.group(1)
+        set_device_field("AFH channel", channel)
+        if channel != "100":
+            add_human_line(f"AFH channel is {channel}; use Force Channel 100 if pairing fails.")
+        else:
+            add_human_line("AFH channel is 100, discovery channel is correct.")
+        important = True
+
+    epoch_match = re.search(r"afh epoch[:=]\s*(\d+)", line, re.IGNORECASE)
+    if epoch_match:
+        afh_debug_state["AFH epoch"] = epoch_match.group(1)
+
+    errors_match = re.search(r"(?:afh )?consecutive tx errors[:=]\s*(\d+)", line, re.IGNORECASE)
+    if errors_match:
+        errors = errors_match.group(1)
+        set_device_field("AFH errors", errors)
+        if errors != "0":
+            add_human_line(f"Radio retries/errors: {errors}.")
+        important = True
+
+    if "failed to set afh channel" in lower:
+        add_human_line("Firmware rejected manual AFH channel command; pairing can still use firmware default channel 100.")
+        important = True
+
+    refresh_device_summary()
+    return important
+
 def send_commands(commands):
     for command in commands:
         send_command(command)
@@ -367,9 +550,13 @@ def connect_to_port():
         connected = True
         set_status(f"Connected to {port}", "green")
         append_text(f"Connected to {port}\n", "success")
+        set_device_field("Mode", "Detecting")
+        set_device_field("Device type", "Detecting")
+        refresh_device_summary()
 
         read_thread = threading.Thread(target=read_serial, daemon=True)
         read_thread.start()
+        schedule_after(250, run_afh_debug)
 
     except serial.SerialException as e:
         append_text(f"Failed to connect: {e}\n")
@@ -458,6 +645,8 @@ def disconnect_serial():
         pass
     ser = None
     connected = False
+    set_device_field("Mode", "Disconnected")
+    refresh_device_summary()
     set_status("Not connected", "red")
 
 # Let the code add MORE!! (more lines of serial that is)
@@ -1182,8 +1371,38 @@ repo_button.pack(side="left", padx=10)
 ToolTip(repo_button, "github.com/ICantMakeThings/SmolSlimeConfigurator")
 
 
+# Human-readable device summary
+summary_frame = ctk.CTkFrame(app)
+summary_frame.pack(pady=(0, 6), padx=10, fill="x")
+summary_frame.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+device_cards = {}
+for idx, field in enumerate(DEVICE_STATE_FIELDS):
+    card = ctk.CTkFrame(summary_frame)
+    card.grid(row=idx // 4, column=idx % 4, padx=5, pady=4, sticky="ew")
+    ctk.CTkLabel(card, text=field, text_color="gray", font=ctk.CTkFont(size=11)).pack(anchor="w", padx=8, pady=(5, 0))
+    value_label = ctk.CTkLabel(card, text=device_state[field], font=ctk.CTkFont(weight="bold"), wraplength=220)
+    value_label.pack(anchor="w", padx=8, pady=(0, 5))
+    device_cards[field] = value_label
+
+human_summary_label = ctk.CTkLabel(summary_frame, text="No important events yet.", justify="left", anchor="w", wraplength=980)
+human_summary_label.grid(row=2, column=0, columnspan=4, padx=8, pady=(2, 6), sticky="ew")
+
+console_mode_frame = ctk.CTkFrame(app)
+console_mode_frame.pack(pady=(0, 4), padx=10, fill="x")
+raw_console_var = tk.BooleanVar(value=settings.get("raw_console_enabled", False))
+raw_console_enabled = raw_console_var.get()
+raw_switch = ctk.CTkSwitch(
+    console_mode_frame,
+    text="Raw console / сырые логи",
+    variable=raw_console_var,
+    command=lambda: set_raw_console_enabled(raw_console_var.get()),
+)
+raw_switch.pack(side="left", padx=8, pady=5)
+ctk.CTkLabel(console_mode_frame, text="Smart GUI mode summarizes noisy firmware logs for normal users.", text_color="gray").pack(side="left", padx=8)
+
 # CLI
-console = ctk.CTkTextbox(app, width=1000, height=220, corner_radius=10)
+console = ctk.CTkTextbox(app, width=1000, height=165, corner_radius=10)
 console.tag_config("red", foreground="red")
 console.tag_config("green", foreground="lime")
 
@@ -1247,8 +1466,10 @@ def flush_ui_queue():
 
     while not serial_queue.empty():
         line = serial_queue.get()
+        important = process_device_line(line)
         update_afh_debug_state(line)
-        append_text(line + "\n")
+        if raw_console_enabled or important:
+            append_text(line + "\n")
 
     app.after(50, flush_ui_queue)
 

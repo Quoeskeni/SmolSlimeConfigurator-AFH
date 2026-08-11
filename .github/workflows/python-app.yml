@@ -16,10 +16,13 @@ jobs:
         include:
           - os: ubuntu-latest
             artifact_name: SmolSlimeConfigurator-linux
+            gui_artifact_name: SmolSlimeConfigurator-GUI-linux
           - os: windows-latest
             artifact_name: SmolSlimeConfigurator.exe
+            gui_artifact_name: SmolSlimeConfigurator-GUI.exe
           - os: macos-latest
             artifact_name: SmolSlimeConfigurator-macos
+            gui_artifact_name: SmolSlimeConfigurator-GUI-macos
     runs-on: ${{ matrix.os }}
 
     steps:
@@ -43,17 +46,22 @@ jobs:
       - name: Build executable
         shell: bash
         run: |
-          pyinstaller --onefile --windowed --name SmolSlimeConfigurator SmolSlimeConfiguratorV9.py
+          pyinstaller --onefile --name SmolSlimeConfigurator SmolSlimeConfiguratorV9.py
+          pyinstaller --onefile --windowed --name SmolSlimeConfigurator-GUI SmolSlimeConfiguratorV9one.py
           mkdir -p upload
           if [ "${{ runner.os }}" = "Windows" ]; then
             cp dist/SmolSlimeConfigurator.exe "upload/${{ matrix.artifact_name }}"
+            cp dist/SmolSlimeConfigurator-GUI.exe "upload/${{ matrix.gui_artifact_name }}"
           else
             cp dist/SmolSlimeConfigurator "upload/${{ matrix.artifact_name }}"
-            chmod +x "upload/${{ matrix.artifact_name }}"
+            cp dist/SmolSlimeConfigurator-GUI "upload/${{ matrix.gui_artifact_name }}"
+            chmod +x "upload/${{ matrix.artifact_name }}" "upload/${{ matrix.gui_artifact_name }}"
           fi
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: upload/${{ matrix.artifact_name }}
+          path: |
+            upload/${{ matrix.artifact_name }}
+            upload/${{ matrix.gui_artifact_name }}
